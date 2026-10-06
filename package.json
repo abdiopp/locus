@@ -1,0 +1,72 @@
+{
+  "name": "locus",
+  "productName": "Locus",
+  "version": "1.0.0",
+  "description": "Simulate GPS location on a real iPhone from Windows or macOS — teleport, routes, joystick, GPX.",
+  "main": "electron/main.js",
+  "author": "Locus",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "build:engine": "node scripts/build-engine.js",
+    "dist": "npm run build:engine && electron-builder",
+    "dist:mac": "npm run build:engine && electron-builder --mac",
+    "dist:win": "npm run build:engine && electron-builder --win",
+    "dist:linux": "npm run build:engine && electron-builder --linux"
+  },
+  "dependencies": {
+    "leaflet": "^1.9.4"
+  },
+  "devDependencies": {
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "dev.locus.desktop",
+    "productName": "Locus",
+    "artifactName": "Locus-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "dist",
+      "buildResources": "assets"
+    },
+    "files": [
+      "electron/**",
+      "renderer/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "build/engine",
+        "to": "engine"
+      }
+    ],
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.developer-tools",
+      "icon": "assets/icon.png",
+      "identity": "-",
+      "hardenedRuntime": false
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "assets/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "icon": "assets/icon.png",
+      "category": "Development"
+    }
+  }
+}

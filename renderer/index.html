@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://server.arcgisonline.com; connect-src 'none'; object-src 'none'; base-uri 'none'"
+    />
+    <title>Locus</title>
+    <link rel="stylesheet" href="../node_modules/leaflet/dist/leaflet.css" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar">
+        <header class="brand">
+          <svg class="logo" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 2a7 7 0 0 0-7 7c0 5.25 7 13 7 13s7-7.75 7-13a7 7 0 0 0-7-7Z" fill="currentColor" opacity=".18" />
+            <path d="M12 2a7 7 0 0 0-7 7c0 5.25 7 13 7 13s7-7.75 7-13a7 7 0 0 0-7-7Z" fill="none" stroke="currentColor" stroke-width="1.6" />
+            <circle cx="12" cy="9" r="2.6" fill="currentColor" />
+          </svg>
+          <div class="brand-text">
+            <h1>Locus</h1>
+            <span>iOS location simulator</span>
+          </div>
+          <span id="enginePill" class="pill pill-muted" title="Engine status">Starting…</span>
+        </header>
+
+        <section class="card" aria-labelledby="deviceHeading">
+          <div class="card-head">
+            <h2 id="deviceHeading">Device</h2>
+            <button id="refreshBtn" class="icon-btn" title="Rescan devices" aria-label="Rescan devices"></button>
+          </div>
+          <select id="deviceSelect" aria-label="Device"><option value="">Scanning…</option></select>
+          <div id="deviceMeta" class="device-meta"></div>
+          <button id="connectBtn" class="btn btn-primary btn-block" disabled>Connect</button>
+          <div id="deviceStatus" class="status-line" role="status"></div>
+          <div id="deviceHelp" class="help" hidden></div>
+        </section>
+
+        <nav class="tabs" role="tablist" aria-label="Mode">
+          <button role="tab" class="tab active" data-tab="teleport" aria-selected="true">Teleport</button>
+          <button role="tab" class="tab" data-tab="route" aria-selected="false">Route</button>
+          <button role="tab" class="tab" data-tab="joystick" aria-selected="false">Joystick</button>
+        </nav>
+
+        <div class="panels">
+          <!-- Teleport -->
+          <section class="panel active" data-panel="teleport">
+            <form id="searchForm" class="search" autocomplete="off">
+              <span class="search-icon" aria-hidden="true"></span>
+              <input id="searchInput" type="search" placeholder="Search a place or paste “lat, lon”" aria-label="Search" />
+            </form>
+            <ul id="searchResults" class="list results" hidden></ul>
+            <p class="hint">Or click anywhere on the map to drop a pin.</p>
+
+            <div class="list-head">
+              <h3>Favorites</h3>
+              <button id="saveFavBtn" class="link-btn" title="Save the current location">+ Save current</button>
+            </div>
+            <ul id="favList" class="list"></ul>
+            <p id="favEmpty" class="empty">No favorites yet.</p>
+
+            <div class="list-head"><h3>Recent</h3></div>
+            <ul id="recentList" class="list"></ul>
+            <p id="recentEmpty" class="empty">Places you teleport to show up here.</p>
+          </section>
+
+          <!-- Route -->
+          <section class="panel" data-panel="route">
+            <p class="hint">Click the map to add waypoints. Drag a marker to adjust it.</p>
+            <div class="segmented" id="profileSeg" role="radiogroup" aria-label="Path">
+              <button data-profile="foot" class="active" role="radio" aria-checked="true">Walk</button>
+              <button data-profile="bike" role="radio" aria-checked="false">Bike</button>
+              <button data-profile="car" role="radio" aria-checked="false">Drive</button>
+              <button data-profile="straight" role="radio" aria-checked="false">Straight</button>
+            </div>
+            <ol id="waypointList" class="list waypoints"></ol>
+            <p id="waypointEmpty" class="empty">No waypoints yet.</p>
+            <div id="routeSummary" class="route-summary"></div>
+            <div class="row gap">
+              <label class="check"><input type="checkbox" id="loopCheck" /> Loop back to start</label>
+              <span class="spacer"></span>
+              <button id="gpxBtn" class="link-btn">Import GPX</button>
+              <button id="clearRouteBtn" class="link-btn danger">Clear</button>
+            </div>
+          </section>
+
+          <!-- Joystick -->
+          <section class="panel" data-panel="joystick">
+            <p class="hint">Drag the stick, or use <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / arrow keys. Release to stop.</p>
+            <div class="joystick-wrap">
+              <div id="joystick" class="joystick" tabindex="0" aria-label="Joystick">
+                <span class="j-n">N</span><span class="j-e">E</span><span class="j-s">S</span><span class="j-w">W</span>
+                <div id="joyKnob" class="knob"></div>
+              </div>
+            </div>
+            <div id="joyReadout" class="readout">Idle</div>
+          </section>
+
+          <!-- Shared movement controls (route + joystick) -->
+          <section id="movement" class="movement" hidden>
+            <div class="list-head">
+              <h3>Speed</h3>
+              <label class="speed-input"><input id="speedInput" type="number" min="1" max="300" step="1" value="5" /> km/h</label>
+            </div>
+            <input id="speedRange" type="range" min="1" max="150" step="1" value="5" aria-label="Speed" />
+            <div class="chips" id="speedChips">
+              <button data-speed="5">Walk 5</button>
+              <button data-speed="10">Run 10</button>
+              <button data-speed="18">Bike 18</button>
+              <button data-speed="50">Car 50</button>
+              <button data-speed="100">Fast 100</button>
+            </div>
+            <div id="routeControls" class="route-controls">
+              <div class="progress" aria-hidden="true"><div id="progressBar"></div></div>
+              <div id="progressText" class="progress-text"></div>
+              <div class="row gap">
+                <button id="startRouteBtn" class="btn btn-primary grow">Start route</button>
+                <button id="pauseRouteBtn" class="btn" hidden>Pause</button>
+                <button id="stopRouteBtn" class="btn" hidden>Stop</button>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <details class="card settings">
+          <summary>Advanced</summary>
+          <label class="field">
+            <span>Position jitter <output id="jitterOut">0 m</output></span>
+            <input id="jitterRange" type="range" min="0" max="10" step="0.5" value="0" />
+            <small>Random wobble while moving, to look less robotic.</small>
+          </label>
+          <label class="field">
+            <span>Speed variance <output id="varianceOut">0%</output></span>
+            <input id="varianceRange" type="range" min="0" max="30" step="1" value="0" />
+          </label>
+          <label class="field">
+            <span>Connection method</span>
+            <select id="transportSelect">
+              <option value="auto">Auto (recommended)</option>
+              <option value="devicectl" data-mac>Xcode devicectl (macOS)</option>
+              <option value="userspace">USB tunnel (no admin)</option>
+              <option value="native" data-mac>macOS system tunnel</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Map style</span>
+            <select id="mapStyleSelect">
+              <option value="auto">Match system</option>
+              <option value="light">Streets</option>
+              <option value="dark">Dark</option>
+              <option value="satellite">Satellite</option>
+            </select>
+          </label>
+          <label class="check"><input type="checkbox" id="clearOnQuitCheck" checked /> Restore real location when quitting</label>
+        </details>
+      </aside>
+
+      <main class="map-wrap">
+        <div id="map" aria-label="Map"></div>
+        <div id="hud" class="hud" hidden>
+          <div class="hud-top">
+            <span id="hudMode" class="pill pill-accent">Static</span>
+            <code id="hudCoords"></code>
+            <button id="copyBtn" class="icon-btn small" title="Copy coordinates" aria-label="Copy coordinates"></button>
+            <button id="centerBtn" class="icon-btn small" title="Center map" aria-label="Center map"></button>
+          </div>
+          <div id="hudAddress" class="hud-address"></div>
+        </div>
+        <button id="resetBtn" class="btn btn-reset" disabled title="Stop simulating and give the iPhone its real GPS back">
+          Restore real location
+        </button>
+        <div id="toast" class="toast" role="alert" hidden></div>
+      </main>
+    </div>
+
+    <script src="../node_modules/leaflet/dist/leaflet.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
