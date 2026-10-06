@@ -20,6 +20,10 @@ A desktop app for **Windows and macOS** that simulates the GPS location of a rea
 
 On the iPhone, **Developer Mode** must be on (iOS 16+): *Settings › Privacy & Security › Developer Mode*. Locus can show you the toggle if it's hidden.
 
+## Download
+
+Get the latest installer from [Releases](https://github.com/abdiopp/locus/releases/latest): `mac-arm64.dmg` for Apple Silicon Macs, `mac-x64.dmg` for Intel Macs, or `win-x64.exe` for Windows.
+
 ## Using it
 
 1. Connect the iPhone by USB (the first time), unlock it, and tap **Trust**.
@@ -70,7 +74,7 @@ npm run dist:mac
 npm run dist:win
 ```
 
-Each command bundles the engine with PyInstaller (into `build/engine`) and then packages the app with electron-builder (into `dist/`). PyInstaller can't cross-compile, so build each installer on its own OS. The GitHub Actions workflow in `.github/workflows/build.yml` does this for macOS (Apple Silicon and Intel) and Windows; push a `v*` tag to attach the installers to a release.
+Each command bundles the engine with PyInstaller (into `build/engine`) and then packages the app with electron-builder (into `dist/`). PyInstaller can't cross-compile, so build each installer on its own OS. The GitHub Actions workflow in `.github/workflows/build.yml` does this for macOS (Apple Silicon and Intel) and Windows. Every push to `main` publishes the three installers as a `build-N` release (marked latest) on the [Releases](https://github.com/abdiopp/locus/releases) page; pushing a `v*` tag publishes a versioned release instead.
 
 The macOS build is ad-hoc signed, not notarized. The first time, right-click the app and choose **Open**, or run `xattr -dr com.apple.quarantine /Applications/Locus.app`. To sign properly, set `mac.identity` in `package.json` to your Developer ID certificate.
 
