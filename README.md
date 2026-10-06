@@ -2,6 +2,8 @@
 
 A desktop app for **Windows and macOS** that simulates the GPS location of a real iPhone or iPad, so you can test location-based apps without leaving your desk. No jailbreak, nothing installed on the phone.
 
+![Locus walking an iPhone along a road route in San Francisco](docs/screenshot.png)
+
 - **Teleport**: search a place, paste coordinates (or a Google Maps link), or click the map
 - **Routes**: click waypoints and move along real roads (walk / bike / drive) or straight lines, with speed control, pause/resume and loop
 - **GPX import**: replay a recorded track
