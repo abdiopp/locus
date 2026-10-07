@@ -16,7 +16,6 @@ import json
 import logging
 import math
 import platform
-import plistlib
 import random
 import sys
 import threading
@@ -139,196 +138,39 @@ def _version_tuple(version: Optional[str]) -> tuple[int, ...]:
     return tuple(parts) or (0,)
 
 
-def _find_keys(obj: Any, wanted: set[str], found: dict[str, Any]) -> None:
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            if k in wanted and k not in found and isinstance(v, (str, int)):
-                found[k] = v
-            _find_keys(v, wanted, found)
-    elif isinstance(obj, list):
-        for v in obj:
-            _find_keys(v, wanted, found)
-
-
-def _parse_kvs(kvs: Any) -> dict[str, Any]:
-    raw = None
-    if isinstance(kvs, dict) and "$hex" in kvs:
-        raw = bytes.fromhex(kvs["$hex"])
-    elif isinstance(kvs, (bytes, bytearray)):
-        raw = bytes(kvs)
-    if not raw:
-        return {}
-    try:
-        data = plistlib.loads(raw)
-    except Exception:
-        return {}
-    found: dict[str, Any] = {}
-    _find_keys(data, {"ProductVersion", "ProductType", "DeviceName", "DeviceClass"}, found)
-    return found
-
-
-async def _usbmux_devices() -> list[dict[str, Any]]:
+async def discover_devices() -> list[dict[str, Any]]:
+    """iPhones/iPads attached by USB cable. Wi-Fi connections are deliberately ignored."""
     try:
         mux_devices = await usbmux.list_devices()
     except Exception as e:  # usbmuxd / Apple Mobile Device Service not running
         log.warning("usbmux unavailable: %r", e)
         return []
-    result: dict[str, dict[str, Any]] = {}
+    devices: dict[str, dict[str, Any]] = {}
     for dev in mux_devices:
-        udid = dev.serial
-        entry = result.get(udid)
-        conn = "USB" if dev.is_usb else "Wi-Fi"
-        if entry is not None:
-            if conn == "USB":
-                entry["connection"] = "USB"
+        if not dev.is_usb or dev.serial in devices:
             continue
-        entry = {"udid": udid, "name": udid, "connection": conn, "ios": None, "model": None, "via": ["usbmux"]}
+        udid = dev.serial
+        entry: dict[str, Any] = {"udid": udid, "name": udid, "connection": "USB", "ios": None, "model": None}
         try:
-            lockdown = await asyncio.wait_for(create_using_usbmux(serial=udid, autopair=False), 6)
+            lockdown = await asyncio.wait_for(
+                create_using_usbmux(serial=udid, autopair=False, connection_type="USB"), 6
+            )
             try:
                 entry["name"] = lockdown.all_values.get("DeviceName") or udid
                 entry["ios"] = lockdown.product_version
                 entry["model"] = lockdown.all_values.get("ProductType")
                 entry["paired"] = True
+                if _version_tuple(entry["ios"]) >= (16,):
+                    with suppress(Exception):
+                        enabled = await lockdown.get_developer_mode_status()
+                        entry["developerMode"] = "enabled" if enabled else "disabled"
             finally:
                 await lockdown.close()
         except Exception as e:
             entry["paired"] = False
-            entry["note"] = "Not trusted yet — unlock the iPhone and tap “Trust”."
             log.info("lockdown probe failed for %s: %r", udid, e)
-        result[udid] = entry
-    return list(result.values())
-
-
-async def _native_devices() -> list[dict[str, Any]]:
-    if not IS_MAC:
-        return []
-    try:
-        from pymobiledevice3.remote import native_tunnel
-
-        raw = await native_tunnel.browse_native_devices(timeout=2.5)
-    except Exception as e:
-        log.info("native browse unavailable: %r", e)
-        return []
-    devices = []
-    for d in raw:
-        udid = d.get("udid")
-        if not udid or d.get("virtual"):
-            continue
-        state = (d.get("connectionState") or {}).get("rawCase")
-        kvs = _parse_kvs(d.get("deviceKVSData"))
-        devices.append(
-            {
-                "udid": udid,
-                "name": d.get("name") or kvs.get("DeviceName") or udid,
-                "model": d.get("model") or kvs.get("ProductType"),
-                "ios": kvs.get("ProductVersion"),
-                "connection": "Wi-Fi" if d.get("wirelessConnectivity") else "USB",
-                "available": state in (None, "available", "connected"),
-                "paired": (d.get("authState") or {}).get("rawCase") == "authenticated",
-                "via": ["native"],
-            }
-        )
-    return devices
-
-
-async def _run(cmd: list[str], timeout: float) -> tuple[int, str, str]:
-    proc = await asyncio.create_subprocess_exec(
-        *cmd, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-    )
-    try:
-        out, err = await asyncio.wait_for(proc.communicate(), timeout)
-    except asyncio.TimeoutError:
-        with suppress(ProcessLookupError):
-            proc.kill()
-        await proc.wait()
-        return -1, "", "timed out"
-    return proc.returncode, out.decode(errors="replace"), err.decode(errors="replace")
-
-
-_devicectl_ok: Optional[bool] = None
-
-
-async def devicectl_available() -> bool:
-    """Xcode 26+ ships `devicectl device simulate location`, Apple's own (most reliable) path on macOS."""
-    global _devicectl_ok
-    if _devicectl_ok is None:
-        if not IS_MAC:
-            _devicectl_ok = False
-        else:
-            try:
-                code, out, _ = await _run(["xcrun", "devicectl", "device", "simulate", "location", "--help"], 20)
-                _devicectl_ok = code == 0 and "coordinate" in out
-            except FileNotFoundError:
-                _devicectl_ok = False
-        log.info("devicectl location support: %s", _devicectl_ok)
-    return _devicectl_ok
-
-
-async def _devicectl_devices() -> list[dict[str, Any]]:
-    if not await devicectl_available():
-        return []
-    code, out, err = await _run(["xcrun", "devicectl", "list", "devices", "-q", "-j", "-"], 30)
-    if code != 0:
-        log.info("devicectl list failed: %s", err.strip()[:300])
-        return []
-    try:
-        raw = json.loads(out)["result"]["devices"]
-    except (ValueError, KeyError):
-        return []
-    devices = []
-    for d in raw:
-        hw = d.get("hardwareProperties") or {}
-        props = d.get("deviceProperties") or {}
-        conn = d.get("connectionProperties") or {}
-        if hw.get("reality") != "physical" or hw.get("platform") not in ("iOS", "iPadOS"):
-            continue
-        if conn.get("tunnelState") == "unavailable":
-            continue
-        devices.append(
-            {
-                "udid": hw.get("udid"),
-                "name": props.get("name") or hw.get("udid"),
-                "model": hw.get("productType"),
-                "ios": props.get("osVersionNumber"),
-                "connection": "USB" if conn.get("transportType") == "wired" else "Wi-Fi",
-                "paired": conn.get("pairingState") == "paired",
-                "developerMode": props.get("developerModeStatus"),
-                "via": ["devicectl"],
-            }
-        )
-    return [d for d in devices if d["udid"]]
-
-
-async def discover_devices() -> list[dict[str, Any]]:
-    mux, native, dctl = await asyncio.gather(_usbmux_devices(), _native_devices(), _devicectl_devices())
-    merged: dict[str, dict[str, Any]] = {}
-
-    def key(udid: str) -> str:
-        return udid.replace("-", "").upper()
-
-    for d in mux:
-        merged[key(d["udid"])] = d
-    for d in native + dctl:
-        k = key(d["udid"])
-        if k in merged:
-            m = merged[k]
-            m["via"] = sorted(set(m["via"]) | set(d["via"]))
-            m["ios"] = m["ios"] or d["ios"]
-            if d.get("connection") == "USB":
-                m["connection"] = "USB"
-            if d.get("developerMode"):
-                m["developerMode"] = d["developerMode"]
-            m["model"] = m["model"] or d["model"]
-            if m["name"] == m["udid"]:
-                m["name"] = d["name"]
-        else:
-            merged[k] = d
-    devices = list(merged.values())
-    for d in devices:
-        d["legacy"] = _version_tuple(d.get("ios")) < (17,) if d.get("ios") else None
-    devices.sort(key=lambda d: (d.get("connection") != "USB", d.get("name") or ""))
-    return devices
+        devices[udid] = entry
+    return sorted(devices.values(), key=lambda d: d.get("name") or "")
 
 
 # --------------------------------------------------------------------------- device session
@@ -346,79 +188,50 @@ class DeviceSession:
         self._lock = asyncio.Lock()
         self._dvt_location: Optional[LocationSimulation] = None
         self._legacy: Optional[DtSimulateLocation] = None
-        self._devicectl = False
         self.alive = True
 
     def info(self) -> dict[str, Any]:
         return {"udid": self.udid, "name": self.name, "ios": self.ios, "transport": self.transport}
 
     @classmethod
-    async def open(cls, udid: str, tunnel_mode: str = "auto", on_progress=None) -> "DeviceSession":
+    async def open(cls, udid: str, on_progress=None) -> "DeviceSession":
         progress = on_progress or (lambda msg: None)
         known = {d["udid"].replace("-", "").upper(): d for d in await discover_devices()}
         dev = known.get(udid.replace("-", "").upper())
         if dev is None:
-            raise EngineError("Device not found. Check the cable / Wi-Fi and that the iPhone is unlocked.", "not_found")
-        if dev.get("paired") is False and not ({"native", "devicectl"} & set(dev.get("via", []))):
+            raise EngineError("iPhone not found on USB. Connect it with a cable and unlock it.", "not_found")
+        if dev.get("paired") is False:
             # Triggers the Trust prompt on the phone.
             progress("Waiting for “Trust This Computer” on the iPhone…")
             try:
-                ld = await create_using_usbmux(serial=dev["udid"], autopair=True, pair_timeout=60)
+                ld = await create_using_usbmux(serial=dev["udid"], autopair=True, pair_timeout=60, connection_type="USB")
                 await ld.close()
             except (PairingDialogResponsePendingError, PasswordRequiredError):
                 raise EngineError("Unlock the iPhone and tap “Trust”, then connect again.", "trust_pending") from None
             except UserDeniedPairingError:
                 raise EngineError("Pairing was denied on the iPhone.", "trust_denied") from None
+        if dev.get("developerMode") == "disabled":
+            raise _developer_mode_error()
 
         ios = dev.get("ios") or "0"
         name = dev.get("name") or udid
         if _version_tuple(ios) >= (17,):
-            return await cls._open_modern(dev, name, ios, tunnel_mode, progress)
+            return await cls._open_modern(dev, name, ios, progress)
         return await cls._open_legacy(dev, name, ios, progress)
 
     # iOS 17+: RSD tunnel -> DVT LocationSimulation channel, held open for the session.
     @classmethod
-    async def _open_modern(cls, dev, name, ios, tunnel_mode, progress) -> "DeviceSession":
+    async def _open_modern(cls, dev, name, ios, progress) -> "DeviceSession":
         udid = dev["udid"]
-        via = set(dev.get("via", []))
-        # Preference: Apple's devicectl (no session to hold, nothing to fight) > pymobiledevice3's
-        # in-process userspace tunnel (USB / Wi-Fi sync) > piggybacking remoted's tunnel (macOS,
-        # works over CoreDevice Wi-Fi pairing but remoted periodically evicts it; we auto-reconnect).
-        attempts: list[str] = []
-        if tunnel_mode in ("auto", "devicectl") and "devicectl" in via:
-            attempts.append("devicectl")
-        if tunnel_mode in ("auto", "userspace") and "usbmux" in via:
-            attempts.append("userspace")
-        if tunnel_mode in ("auto", "native") and IS_MAC and "native" in via:
-            attempts.append("native")
-        if not attempts:
-            if tunnel_mode in ("native", "devicectl") and not IS_MAC:
-                raise EngineError(f"The {tunnel_mode} transport is only available on macOS.", "bad_mode")
-            if tunnel_mode != "auto":
-                raise EngineError(f"The {tunnel_mode} transport can't reach this device. Try Auto.", "bad_mode")
-            raise EngineError(
-                "This device is only reachable over Wi-Fi pairing, which this OS can't tunnel to. "
-                "Connect it with a USB cable (or enable Wi-Fi sync in iTunes / Apple Devices).",
-                "unreachable",
-            )
-
+        # pymobiledevice3's in-process userspace tunnel over USB needs no root/admin and no Xcode
+        # (iOS 17.4+). iOS 17.0-17.3 lacks the service it uses; on macOS those are reached through
+        # the OS's own remoted tunnel instead (also no Xcode), elsewhere they need an admin tunnel.
+        attempts = ["userspace"] + (["native"] if IS_MAC else [])
         errors = []
         for transport in attempts:
             session = cls(udid, name, ios, transport)
             try:
-                if transport == "devicectl":
-                    if dev.get("developerMode") == "disabled":
-                        raise _developer_mode_error()
-                    progress("Connecting through Xcode (devicectl)…")
-                    session._devicectl = True
-                    # A no-op round-trip proves the device is reachable before we report success.
-                    code, _, err = await _run(
-                        ["xcrun", "devicectl", "device", "info", "details", "-q", "-d", udid, "-j", "-"], 45
-                    )
-                    if code != 0:
-                        raise RuntimeError(err.strip().splitlines()[-1] if err.strip() else "devicectl failed")
-                    return session
-                progress(f"Opening {transport} tunnel…")
+                progress("Opening developer tunnel…")
                 if transport == "native":
                     from pymobiledevice3.remote.native_tunnel import NativeRemotedTunnel
 
@@ -448,7 +261,7 @@ class DeviceSession:
             except UserspaceTunnelUnavailableError as e:
                 await session.close()
                 errors.append(f"{transport}: {e}")
-                if _version_tuple(ios) < (17, 4) and not IS_MAC:
+                if not IS_MAC:
                     raise EngineError(
                         "iOS 17.0–17.3 needs an admin tunnel on Windows. Update the iPhone to iOS 17.4+ "
                         "or run `pymobiledevice3 remote tunneld` as Administrator.",
@@ -458,14 +271,14 @@ class DeviceSession:
                 await session.close()
                 log.exception("%s tunnel failed", transport)
                 errors.append(f"{transport}: {e!r}")
-        raise EngineError("Could not open a tunnel to the device. " + " | ".join(errors), "tunnel_failed")
+        raise EngineError("Could not open a developer connection to the device. " + " | ".join(errors), "tunnel_failed")
 
     # iOS ≤ 16: lockdown developer service; needs the (non-personalized) DDI mounted.
     @classmethod
     async def _open_legacy(cls, dev, name, ios, progress) -> "DeviceSession":
         session = cls(dev["udid"], name, ios, "lockdown")
         try:
-            lockdown = await create_using_usbmux(serial=dev["udid"], autopair=True)
+            lockdown = await create_using_usbmux(serial=dev["udid"], autopair=True, connection_type="USB")
             session._stack.push_async_callback(lockdown.close)
             await session._ensure_ddi(lockdown, progress)
             session._legacy = DtSimulateLocation(lockdown)
@@ -482,7 +295,7 @@ class DeviceSession:
             raise EngineError(f"Could not connect: {e!r}", "connect_failed") from None
 
     async def _ensure_ddi(self, provider, progress) -> None:
-        progress("Checking Developer Disk Image…")
+        progress("Preparing developer image (first time can take a minute)…")
         try:
             await auto_mount(provider)
         except DeveloperModeIsNotEnabledError:
@@ -502,9 +315,7 @@ class DeviceSession:
             if not self.alive:
                 raise EngineError("Device disconnected.", "disconnected")
             try:
-                if self._devicectl:
-                    await self._devicectl_cmd("coordinate", "--latitude", f"{lat:.7f}", "--longitude", f"{lon:.7f}")
-                elif self._dvt_location is not None:
+                if self._dvt_location is not None:
                     await asyncio.wait_for(self._dvt_location.set(lat, lon), 10)
                 else:
                     await asyncio.wait_for(self._legacy.set(lat, lon), 10)
@@ -512,26 +323,12 @@ class DeviceSession:
                 self.alive = False
                 raise EngineError(f"Lost connection to device ({e})", "disconnected") from None
 
-    async def _devicectl_cmd(self, *args: str) -> None:
-        last = ""
-        for _ in range(2):  # one quiet retry absorbs a transient Wi-Fi hiccup
-            code, _, err = await _run(
-                ["xcrun", "devicectl", "device", "simulate", "location", args[0], "-q", "-d", self.udid, *args[1:]],
-                20,
-            )
-            if code == 0:
-                return
-            last = err.strip().splitlines()[-1] if err.strip() else f"devicectl exit {code}"
-        raise RuntimeError(last)
-
     async def clear(self) -> None:
         async with self._lock:
             if not self.alive:
                 return
             with suppress(Exception):
-                if self._devicectl:
-                    await self._devicectl_cmd("clear")
-                elif self._dvt_location is not None:
+                if self._dvt_location is not None:
                     await asyncio.wait_for(self._dvt_location.clear(), 10)
                 elif self._legacy is not None:
                     await asyncio.wait_for(self._legacy.clear(), 10)
@@ -745,7 +542,6 @@ class Engine:
     def __init__(self):
         self.session: Optional[DeviceSession] = None
         self.mover = Mover(self)
-        self.tunnel_mode = "auto"
         self._reconnecting = False
         self.inbox: asyncio.Queue[Optional[str]] = asyncio.Queue()
 
@@ -765,7 +561,7 @@ class Engine:
             for attempt in range(1, 6):
                 await asyncio.sleep(min(2 * attempt, 8))
                 try:
-                    self.session = await DeviceSession.open(udid, self.tunnel_mode)
+                    self.session = await DeviceSession.open(udid)
                     log.info("reconnected on attempt %d", attempt)
                     resume_pos = self.mover.position
                     if resume_pos:
@@ -800,7 +596,6 @@ class Engine:
         udid = p.get("udid")
         if not udid:
             raise EngineError("No device selected.", "bad_request")
-        self.tunnel_mode = p.get("tunnelMode", self.tunnel_mode) or "auto"
         if self.session:
             await self.m_disconnect({"clear": False})
         emit_event("status", {"state": "connecting", "message": "Connecting…"})
@@ -809,7 +604,7 @@ class Engine:
             emit_event("status", {"state": "connecting", "message": msg})
 
         try:
-            self.session = await DeviceSession.open(udid, self.tunnel_mode, progress)
+            self.session = await DeviceSession.open(udid, progress)
         except Exception:
             emit_event("status", {"state": "disconnected"})
             raise
@@ -861,8 +656,6 @@ class Engine:
             self.mover.jitter_m = max(0.0, min(25.0, float(p["jitterM"])))
         if "speedVariance" in p:
             self.mover.speed_variance = max(0.0, min(0.5, float(p["speedVariance"])))
-        if "tunnelMode" in p and p["tunnelMode"] in ("auto", "devicectl", "native", "userspace"):
-            self.tunnel_mode = p["tunnelMode"]
         return self.mover.snapshot()
 
     async def m_joystick(self, p):
@@ -879,7 +672,7 @@ class Engine:
     async def m_reveal_developer_mode(self, p):
         udid = p.get("udid")
         try:
-            lockdown = await create_using_usbmux(serial=udid, autopair=False)
+            lockdown = await create_using_usbmux(serial=udid, autopair=False, connection_type="USB")
         except NoDeviceConnectedError:
             raise EngineError("Connect the iPhone with a USB cable to reveal Developer Mode.", "not_found") from None
         try:

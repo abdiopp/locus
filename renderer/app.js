@@ -116,7 +116,6 @@ const state = {
   settings: {
     jitter: 0,
     variance: 0,
-    transport: 'auto',
     mapStyle: 'auto',
     clearOnQuit: true,
     ...store.get('settings', {}),
@@ -319,7 +318,7 @@ function onStatus(data) {
   } else if (data.state === 'connected') {
     state.connecting = false;
     state.connected = data.device;
-    setStatus(`Connected via ${transportLabel(data.device.transport)}.`, 'ok');
+    setStatus('Connected over USB.', 'ok');
     showHelp(null);
   } else if (data.state === 'reconnecting') {
     setEnginePill('Reconnecting…', 'warn');
@@ -334,10 +333,6 @@ function onStatus(data) {
   renderDevice();
 }
 
-function transportLabel(t) {
-  return { devicectl: 'Xcode devicectl', userspace: 'USB tunnel', native: 'macOS tunnel', lockdown: 'developer service' }[t] || t;
-}
-
 async function pushOptions() {
   const s = state.settings;
   window.locus.setClearOnQuit(s.clearOnQuit);
@@ -345,7 +340,6 @@ async function pushOptions() {
     await call('set_options', {
       jitterM: s.jitter,
       speedVariance: s.variance / 100,
-      tunnelMode: s.transport,
       speedKmh: state.speedKmh,
     });
   } catch (e) {
@@ -451,7 +445,7 @@ $('#connectBtn').addEventListener('click', async () => {
   showHelp(null);
   renderDevice();
   try {
-    await call('connect', { udid, tunnelMode: state.settings.transport });
+    await call('connect', { udid });
   } catch (e) {
     state.connecting = false;
     setStatus(e.message, 'error');
@@ -496,12 +490,12 @@ function showHelp(code) {
   } else if (code === 'no_devices' || code === 'not_found' || code === 'unreachable') {
     add(
       IS_MAC
-        ? '<strong>No iPhone found</strong><ol><li>Connect the iPhone with a cable and unlock it</li><li>Tap “Trust” if asked</li><li>Install Xcode for the most reliable connection (Wi-Fi works once paired)</li></ol>'
+        ? '<strong>No iPhone found</strong><ol><li>Connect the iPhone with a USB cable and unlock it</li><li>Tap “Trust” if asked, then rescan</li></ol>'
         : '<strong>No iPhone found</strong><ol><li>Install <b>Apple Devices</b> (Microsoft Store) or iTunes — it provides the USB driver</li><li>Connect the iPhone with a cable and unlock it</li><li>Tap “Trust” if asked, then rescan</li></ol>',
     );
   } else if (code === 'tunnel_failed' || code === 'needs_admin_tunnel') {
     add(
-      '<strong>Couldn’t open a developer connection</strong><ol><li>Keep the iPhone unlocked and on the cable</li><li>Make sure Developer Mode is on</li><li>Try another connection method under Advanced</li></ol>',
+      '<strong>Couldn’t open a developer connection</strong><ol><li>Keep the iPhone unlocked and on the cable</li><li>Make sure Developer Mode is on</li><li>Unplug and reconnect the cable, then try again</li></ol>',
     );
   } else {
     el.hidden = true;
@@ -1158,10 +1152,8 @@ function bindSettings() {
   variance.value = s.variance;
   $('#jitterOut').textContent = `${s.jitter} m`;
   $('#varianceOut').textContent = `${s.variance}%`;
-  $('#transportSelect').value = s.transport;
   $('#mapStyleSelect').value = s.mapStyle;
   $('#clearOnQuitCheck').checked = s.clearOnQuit;
-  if (!IS_MAC) $$('#transportSelect option[data-mac]').forEach((o) => o.remove());
 
   const save = () => {
     store.set('settings', state.settings);
@@ -1177,11 +1169,6 @@ function bindSettings() {
     $('#varianceOut').textContent = `${s.variance}%`;
   });
   variance.addEventListener('change', save);
-  $('#transportSelect').addEventListener('change', (e) => {
-    s.transport = e.target.value;
-    save();
-    if (state.connected) toast('The new connection method applies the next time you connect.');
-  });
   $('#mapStyleSelect').addEventListener('change', (e) => {
     s.mapStyle = e.target.value;
     store.set('settings', state.settings);

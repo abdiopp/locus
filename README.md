@@ -2,7 +2,7 @@
 
 A desktop app for **Windows and macOS** that simulates the GPS location of a real iPhone or iPad, so you can test location-based apps without leaving your desk. No jailbreak, nothing installed on the phone.
 
-![Locus walking an iPhone along a road route in San Francisco](docs/screenshot.png)
+![Locus walking a USB-connected iPhone along a road route in San Francisco](docs/screenshot.png)
 
 - **Teleport**: search a place, paste coordinates (or a Google Maps link), or click the map
 - **Routes**: click waypoints and move along real roads (walk / bike / drive) or straight lines, with speed control, pause/resume and loop
@@ -17,10 +17,11 @@ A desktop app for **Windows and macOS** that simulates the GPS location of a rea
 |---|---|---|
 | OS | macOS 12+ (Apple Silicon or Intel) | Windows 10/11 x64 |
 | iPhone/iPad | iOS 12 – 26+ | iOS 12 – 16, and 17.4+ |
-| Extra | **Xcode recommended** (gives the most reliable connection, including over Wi-Fi) | **Apple Devices** (Microsoft Store) or iTunes for the USB driver |
+| Connection | **USB cable** | **USB cable** |
+| Extra | Nothing: no Xcode, no Python | **Apple Devices** (Microsoft Store) or iTunes for the USB driver |
 | Admin rights | Not needed | Not needed |
 
-On the iPhone, **Developer Mode** must be on (iOS 16+): *Settings › Privacy & Security › Developer Mode*. Locus can show you the toggle if it's hidden.
+Locus only talks to devices plugged in by cable; Wi-Fi connections are ignored. On the iPhone, **Developer Mode** must be on (iOS 16+): *Settings › Privacy & Security › Developer Mode*. Locus can show you the toggle if it's hidden. The first connection to a device downloads Apple's Developer Disk Image for it, so you need internet access that time.
 
 ## Download
 
@@ -35,16 +36,15 @@ Get the latest installer from [Releases](https://github.com/abdiopp/locus/releas
 
 ## How it connects
 
-Locus has a small Python engine (bundled, so you don't need Python installed) built on [pymobiledevice3](https://github.com/doronz88/pymobiledevice3). It picks the best transport for each device:
+Locus has a small Python engine (bundled, so you don't need Python installed) built on [pymobiledevice3](https://github.com/doronz88/pymobiledevice3). Everything goes over the USB cable:
 
 | Device | Transport | Notes |
 |---|---|---|
-| iOS 17+ on macOS with Xcode | `xcrun devicectl device simulate location` | Apple's own path. Works over USB or Wi-Fi, holds no session open, and is the most stable. |
-| iOS 17.4+ (USB / Wi-Fi sync) | pymobiledevice3 in-process **userspace tunnel** | No root/admin. This is the main path on Windows. |
-| iOS 17+ on macOS without Xcode | Piggyback on macOS's own `remoted` tunnel | Works, but macOS periodically takes the connection back. Locus reconnects automatically. |
-| iOS ≤ 16 | Legacy `com.apple.dt.simulatelocation` | Mounts the Developer Disk Image automatically. |
+| iOS 17.4+ | pymobiledevice3 in-process **userspace tunnel** | No root/admin, no Xcode. |
+| iOS 17.0–17.3 on macOS | macOS's own `remoted` tunnel | Built into macOS, no Xcode needed. On Windows these versions need an admin tunnel; update to 17.4+ instead. |
+| iOS ≤ 16 | Legacy `com.apple.dt.simulatelocation` | |
 
-You can force a method under **Advanced › Connection method**.
+For every version, Locus mounts the Developer Disk Image automatically if it isn't already mounted.
 
 ## Development
 
@@ -91,7 +91,7 @@ scripts/    engine bundling
 
 ## Troubleshooting
 
-- **No iPhone found**: unlock the phone, re-plug the cable, and tap Trust. On Windows, make sure Apple Devices or iTunes is installed.
+- **No iPhone found**: Locus only sees devices on a USB cable. Unlock the phone, re-plug the cable (a data cable, not charge-only), and tap Trust. On Windows, make sure Apple Devices or iTunes is installed.
 - **Developer Mode is off**: turn it on in Settings and restart the phone. Click **Reveal Developer Mode toggle** if it's missing.
 - **iOS 17.0–17.3 on Windows**: these versions need a privileged tunnel. Update the device to 17.4+, or run `pymobiledevice3 remote tunneld` as Administrator.
 - **Location stuck after a crash**: connect again and click **Restore real location**, or restart the iPhone.
