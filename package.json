@@ -1,7 +1,7 @@
 {
   "name": "locus",
   "productName": "Locus",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Simulate GPS location on a real iPhone from Windows or macOS — teleport, routes, joystick, GPX.",
   "main": "electron/main.js",
   "author": "Locus",
